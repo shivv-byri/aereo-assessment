@@ -1,32 +1,38 @@
-# AEREO Geospatial Workspace
+# AEREO — Geospatial Measurement Studio
 
-A React geospatial workspace and FastAPI measurement service for uploading KML or zipped Shapefiles, inspecting persisted geometry, and exploring CRS-aware area or length measurements. Results remain available in SQLite after the upload response. A PostgreSQL SQLAlchemy URL is configurable with a compatible driver, but PostgreSQL has not been tested here.
+AEREO helps GIS analysts, survey teams, and developers upload spatial files, inspect feature geometry and attributes, and review defensible area and distance measurements. The React workspace accepts KML and zipped Shapefiles, displays available features on an interactive map, and retrieves processing results from a FastAPI service. Geographic longitude and latitude are angular coordinates: measuring directly in degrees would not produce metres or square metres. AEREO records the source CRS, transforms measurable geometry to a suitable projected CRS, and reports failures explicitly.
 
-The problem this solves is turning source geometries and attributes into retrievable physical measurements without treating longitude and latitude degrees as metres. The API records source CRS and per-feature outcomes so users can distinguish a valid result from an unavailable one.
+## Contents
 
-## Run the full application
+- [Live deployment](#live-deployment)
+- [Features and limits](#features-and-limits)
+- [Technology stack](#technology-stack)
+- [Architecture](#architecture)
+- [API reference](#api-reference)
+- [Local development](#local-development)
+- [Environment configuration](#environment-configuration)
+- [CRS and measurement policy](#crs-and-measurement-policy)
+- [Validation, errors, and status](#validation-errors-and-status)
+- [Testing and quality checks](#testing-and-quality-checks)
+- [Project structure and design decisions](#project-structure-and-design-decisions)
+- [Current limitations](#current-limitations)
+- [Learning Outcomes](#learning-outcomes)
+- [Future Improvements](#future-improvements)
 
-Prerequisites: Python 3.11 or 3.12 with compatible geospatial wheels, Node.js 20.19+ or 22.12+, and npm. This checkout was verified with Python 3.11 and Node 24. Run backend and frontend in separate terminals:
+## Live deployment
 
-```powershell
-# Terminal 1, from the repository root
-py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+| Service | URL |
+| --- | --- |
+| React application (Vercel) | [aereo-assessment.vercel.app](https://aereo-assessment.vercel.app) |
+| FastAPI backend (Render) | [aereo-assessment.onrender.com](https://aereo-assessment.onrender.com) |
+| Swagger / OpenAPI documentation | [API documentation](https://aereo-assessment.onrender.com/docs) |
+| Backend health | [Health endpoint](https://aereo-assessment.onrender.com/health) |
 
-# Terminal 2, from the repository root
-cd frontend
-npm ci
-npm run dev
-```
+The API does not define a `/` route; use `/docs` or `/health` to confirm it is serving requests.
 
-Open `http://127.0.0.1:5173`. The API is at `http://127.0.0.1:8000`, with OpenAPI documentation at `/docs`. Tables are created when the API starts. `frontend/.env.example` documents optional `VITE_API_BASE_URL` and `VITE_TILE_URL` overrides; copy it to `frontend/.env.local` only when needed. Vite variables are public browser configuration, not a place for secrets. The backend accepts `CORS_ORIGINS` as a comma-separated list; its default permits only the two local Vite origins.
+The Render free web service can spin down after 15 minutes without traffic; the next request may take about a minute to wake it. Its filesystem is ephemeral: with the default local SQLite database, file and feature records can disappear when the service spins down, restarts, or redeploys. Uploaded originals are processed in a temporary directory and then deleted; they are not stored permanently. The public deployment is therefore a demonstration, not a durable data store. See [Render's free-service limitations](https://render.com/docs/free).
 
-The web app provides Overview, Upload Files, Map Workspace, Measurements, File History, and API Status. Overview counts and history come from persisted API records. The map requests WGS84 geometry from the API and loads 500 features at a time, up to 2,000 loaded features per view. The OpenStreetMap basemap is attributed; if tiles fail, geometry remains interactive on a plain background. A public deployment should choose a tile provider and usage plan appropriate to its traffic.
-
-Uploads are synchronous. The browser shows an indeterminate processing state, then uses the returned file ID. It does not invent percentage progress or a background job. The frontend warns early above the backend's default 20 MiB limit; backend validation remains authoritative and its limit may be configured differently.
-
-## Assignment coverage
+## Features and limits
 
 - Accepts `.kml` and `.zip` Shapefile uploads, validates contents, and limits upload size.
 - Stores file metadata and each feature's ID, index, geometry, type, properties, source CRS, measurement, target CRS, status, and diagnostic.
@@ -34,41 +40,51 @@ Uploads are synchronous. The browser shows an indeterminate processing state, th
 - Uses projected coordinates selected for each feature; errors are explicit when CRS, geometry, or projection prevents a measurement.
 - Provides upload, persisted file listing, file metadata, paginated measurements, map-safe GeoJSON, and health endpoints.
 
-No separate assignment document was present in the workspace. This implementation follows the requirements in the supplied task description.
+The interface provides Overview, Upload Files, Map Workspace, Measurements, File History, and API Status. Counts and history come from server records. The map loads WGS84 GeoJSON in pages of 500, up to **2,000 loaded features per view**. An attributed OpenStreetMap tile layer supplies the basemap; geometry remains interactive if tiles fail. The measurement table is paginated separately.
 
-## Stack and prerequisites
+Uploads are synchronous. The UI shows an indeterminate processing state and uses the actual returned status and file ID. The backend's default upload limit is **20 MiB**, with a **10,000-feature** processing limit. Polygon perimeter is not calculated. The browser checks the default file limit early, while server validation is authoritative.
 
-Python 3.11 or 3.12, FastAPI, Uvicorn, SQLAlchemy 2, SQLite, Fiona, GeoPandas, Shapely, PyProj, Pydantic, and defusedxml. Development tools are pytest, FastAPI TestClient, httpx, and Ruff. This project was developed and tested with Python 3.11 on Windows; Python 3.12 has not been exercised here. Native geospatial wheels must be available for the selected Python and platform.
+## Technology stack
 
-### Setup on Windows PowerShell
+| Layer | Implementation |
+| --- | --- |
+| Frontend | React, TypeScript, Vite, Tailwind CSS, local shadcn-style UI components, Lucide, React Router, TanStack Query, Zod, React Leaflet, Leaflet |
+| API | Python, FastAPI, Uvicorn, Pydantic |
+| Geospatial processing | Fiona for Shapefiles; GeoPandas for UTM estimation; Shapely and PyProj for geometry, transformations, and measurements; defusedxml for KML parsing |
+| Persistence | SQLAlchemy 2 and SQLite by default; PostgreSQL URL support is configurable but untested |
+| Testing and quality | Pytest, FastAPI TestClient, httpx, Ruff; Vitest, Testing Library, ESLint, TypeScript, Prettier |
+| Deployment | Vercel frontend; Render Python web service |
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-$env:DATABASE_URL = "sqlite:///./aereo.db"
-$env:MAX_UPLOAD_BYTES = "20971520"
-.\.venv\Scripts\python -m uvicorn app.main:app --reload
+## Architecture
+
+```mermaid
+flowchart LR
+    User[Browser user] --> UI[React / Vite on Vercel]
+    UI -->|REST and multipart upload| API[FastAPI on Render]
+    API --> Validate[Upload and ZIP / KML validation]
+    Validate --> Geo[Fiona / GeoPandas / Shapely / PyProj]
+    Geo --> DB[(SQLAlchemy / SQLite)]
+    DB --> API
+    API -->|Metadata, measurements, WGS84 GeoJSON| UI
+    UI --> Map[Leaflet map and workspace]
 ```
 
-On Unix, use `python3.11 -m venv .venv`, `.venv/bin/python`, and `export` for environment variables. The defaults in `.env.example` are used when variables are unset. `.env` is an example reference only: environment variables are read directly, without automatic dotenv loading. Tables are created at application startup. For PostgreSQL, install a compatible driver such as `psycopg` separately and set a SQLAlchemy PostgreSQL URL; schema migrations are not included.
+The frontend handles file selection, navigation, filtering, map interaction, and display formatting; the backend owns validation, CRS interpretation, and measurement. The typed client uses `VITE_API_BASE_URL` and checks response shapes. During upload, FastAPI bounds the request body, copies the file to an isolated temporary directory, parses the supported dataset, processes individual features, and commits file and feature records. It removes the temporary input after processing. The measurement endpoint retains source-coordinate geometry; a separate map endpoint transforms displayable geometry to WGS84 GeoJSON. File-level and per-feature errors remain queryable instead of being represented as zero measurements.
 
-Interactive OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
-
-## API
+## API reference
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/files/` | Multipart upload; field name `upload` |
 | `GET` | `/api/files/?limit=20&offset=0&search=&status=` | Persisted file history, newest first; limit 1–100 |
-| `GET` | `/api/files/{id}/` | Persisted file metadata and status |
-| `GET` | `/api/files/{id}/measurements/?limit=100&offset=0` | Feature details and measurements; limit 1–500; optional `search`, `geometry_type`, `measurement_status`, `sort`, `direction` |
-| `GET` | `/api/files/{id}/features/geojson/?limit=500&offset=0` | Paginated map geometry transformed to WGS84; limit 1–500 |
+| `GET` | `/api/files/{file_id}/` | Stored file metadata and status |
+| `GET` | `/api/files/{file_id}/measurements/?limit=100&offset=0` | Feature details and measurements; limit 1–500; optional `search`, `geometry_type`, `measurement_status`, `sort`, `direction` |
+| `GET` | `/api/files/{file_id}/features/geojson/?limit=500&offset=0` | Paginated map geometry transformed to WGS84; limit 1–500 |
 | `GET` | `/health` | Basic process health |
 
-Create a sample zipped Shapefile, then upload either sample:
+The full request and response schemas are available in [Swagger UI](https://aereo-assessment.onrender.com/docs). From the repository root, with the local API running:
 
 ```powershell
-.\.venv\Scripts\python scripts\make_sample_shapefile.py
 curl.exe -F "upload=@samples/example.kml" http://127.0.0.1:8000/api/files/
 curl.exe -F "upload=@samples/sample-points.zip" http://127.0.0.1:8000/api/files/
 curl.exe http://127.0.0.1:8000/api/files/REPLACE_WITH_ID/
@@ -77,22 +93,22 @@ curl.exe "http://127.0.0.1:8000/api/files/?limit=20&offset=0"
 curl.exe "http://127.0.0.1:8000/api/files/REPLACE_WITH_ID/features/geojson/?limit=500&offset=0"
 ```
 
-`samples/sample-points.zip` contains one **Point** in EPSG:4326, so its measurement is `NOT_APPLICABLE`. `samples/example.kml` contains a point, line, and polygon near 77°E, 12°N. These checked-in samples are different from a separately uploaded polygon near 78.47°E, 17.44°N that may appear in a local workspace as approximately 235,376 m². The original uploaded ZIP is not retained by this application; its extracted geometry and measurement are persisted.
+`samples/sample-points.zip` contains one **Point** in EPSG:4326, so its measurement is `NOT_APPLICABLE`. `samples/example.kml` contains a point, line, and polygon near 77°E, 12°N. `scripts/make_sample_shapefile.py` can regenerate the checked-in point ZIP if needed. Original upload files are not retained; extracted geometry and results are stored in the configured database.
 
-A successful KML upload returns HTTP 201 with this shape (UUID and timestamp vary):
+A successful upload of the checked-in KML returns HTTP 201 with this shape (ID and timestamp vary):
 
 ```json
 {
-  "id": "f5039bb7-c932-4eeb-8bc1-51afe1c300a0",
+  "id": "<file-id>",
   "original_filename": "example.kml",
   "file_format": "kml",
   "source_crs": "EPSG:4326",
   "feature_count": 3,
   "processing_status": "COMPLETED",
-  "created_at": "2026-10-09T12:00:00Z",
+  "created_at": "<UTC timestamp>",
   "error_summary": null,
-  "file_url": "/api/files/f5039bb7-c932-4eeb-8bc1-51afe1c300a0/",
-  "measurements_url": "/api/files/f5039bb7-c932-4eeb-8bc1-51afe1c300a0/measurements/"
+  "file_url": "/api/files/<file-id>/",
+  "measurements_url": "/api/files/<file-id>/measurements/"
 }
 ```
 
@@ -108,16 +124,80 @@ The measurement endpoint returns `file_id`, `total`, `limit`, `offset`, and `ite
   "source_crs": "EPSG:4326",
   "projected_crs": "EPSG:32643",
   "measurement_type": "length",
-  "measurement_value": 1089.0,
+  "measurement_value": 1089.23303449372,
   "measurement_unit": "m",
   "measurement_status": "MEASURED",
   "error": null
 }
 ```
 
-The value above is illustrative; it varies slightly by geometry and projection. Point records contain null measurement fields and `NOT_APPLICABLE`.
+The value shown was calculated from `samples/example.kml` in this checkout; small numerical differences across geospatial library versions are possible. Point records contain null measurement fields and `NOT_APPLICABLE`.
 
 The map endpoint returns `{file_id, crs: "EPSG:4326", total, limit, offset, items}`. Each item has `feature_index`, `feature_id`, `geometry_type`, `geometry`, `properties`, and `error`. Its geometry is WGS84 GeoJSON in **longitude, latitude** order. For backward compatibility, the measurement endpoint's `geometry` remains in the **source CRS**; projected source coordinates must not be passed directly to Leaflet. Unknown CRS, invalid, empty, and unsupported map geometries return `geometry: null` with an explanation. Map availability is distinct from whether a physical measurement succeeded.
+
+## Local development
+
+Use Python **3.11 or 3.12** (`pyproject.toml` requires `>=3.11,<3.13`), Node.js compatible with Vite 8 (20.19+ or 22.12+), and npm. The repository's `.python-version` requests 3.12 on Render. Local backend checks below were run with Python 3.11; Python 3.12 was not available locally. Native geospatial wheels must be available for the selected Python and platform.
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/shivv-byri/aereo-assessment.git
+cd aereo-assessment
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+$env:DATABASE_URL = "sqlite:///./aereo.db"
+$env:MAX_UPLOAD_BYTES = "20971520"
+$env:CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+In a second PowerShell terminal, from the repository root:
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local
+npm ci
+npm run dev
+```
+
+### macOS / Linux
+
+Use `python3.12` below if available; `python3.11` also satisfies the project requirement. Run the backend and frontend in separate terminals.
+
+```bash
+git clone https://github.com/shivv-byri/aereo-assessment.git
+cd aereo-assessment
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+export DATABASE_URL=sqlite:///./aereo.db
+export MAX_UPLOAD_BYTES=20971520
+export CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+```bash
+cd aereo-assessment/frontend
+cp .env.example .env.local
+npm ci
+npm run dev
+```
+
+Open [the local frontend](http://127.0.0.1:5173), [backend health](http://127.0.0.1:8000/health), or [local Swagger UI](http://127.0.0.1:8000/docs). The backend creates tables on startup. Its `.env.example` lists defaults but is **not automatically loaded**; set shell or hosting environment variables as shown. Vite reads `frontend/.env.local` for local development. Keep real `.env` files and secrets out of Git.
+
+## Environment configuration
+
+| Variable | Where | Purpose and default |
+| --- | --- | --- |
+| `DATABASE_URL` | Backend | SQLAlchemy URL; defaults to `sqlite:///./aereo.db` in the process working directory. A PostgreSQL URL requires an additional compatible driver and has not been tested here. |
+| `MAX_UPLOAD_BYTES` | Backend | Maximum file size in bytes; defaults to `20971520` (20 MiB). |
+| `CORS_ORIGINS` | Backend | Comma-separated browser origins allowed by CORS; defaults to the two local Vite origins above. |
+| `VITE_API_BASE_URL` | Frontend build | Backend origin; local example and code fallback are `http://localhost:8000`. |
+| `VITE_TILE_URL` | Frontend build | Optional Leaflet tile URL; local example uses OpenStreetMap tiles. |
+
+For the public deployment, set `VITE_API_BASE_URL=https://aereo-assessment.onrender.com` in **Vercel Production** and `CORS_ORIGINS=https://aereo-assessment.vercel.app,http://localhost:5173,http://127.0.0.1:5173` in **Render**. Redeploy the frontend after changing a `VITE_` value because Vite embeds it during the build. The shown CORS configuration lists explicit origins. `VITE_` values are visible to browsers, so never put secrets in them.
 
 ## CRS and measurement policy
 
@@ -141,12 +221,12 @@ Uploads are copied in chunks into an isolated temporary directory and deleted af
 
 Other responses: 400 for empty upload or non-ZIP content, 413 for size limit, 415 for unsupported extension, 404 for unknown ID, 422 for invalid dataset or request parameters, 503 for a database error, and 500 for an unexpected processing failure. The 500 response includes a `file_id`; the accepted file is marked `FAILED`, and pending feature rows roll back. FastAPI uses its standard `{"detail": ...}` error envelope. Internal paths and exception details are not returned. Unsupported geometry types and bad individual geometries produce `measurement_status: "ERROR"`, `measurement_value: null`, and an `error` description. Features with invalid geometry parsing may have null `geometry`.
 
-## Tests and quality checks
+## Testing and quality checks
 
 ```powershell
 .\.venv\Scripts\python -m pytest -q
-.\.venv\Scripts\ruff check .
-.\.venv\Scripts\ruff format --check .
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m ruff format --check .
 .\.venv\Scripts\python -m pip check
 ```
 
@@ -156,7 +236,6 @@ Frontend checks:
 
 ```powershell
 cd frontend
-npm ci
 npm run test
 npm run lint
 npm run typecheck
@@ -164,40 +243,54 @@ npm run format:check
 npm run build
 ```
 
-Frontend tests cover multipart requests and error parsing, upload validation and failed-record recovery, unit formatting, server pagination, and map rendering only from returned geometry. The ignored build output is `frontend/dist/`. The frontend uses React, TypeScript, Vite, Tailwind CSS, shadcn-style local UI components, Lucide, React Router, TanStack Query, Zod, React Leaflet, and Leaflet. Direct navigation to a file URL works with Vite's SPA fallback; other deployment servers must serve `index.html` for frontend routes.
+Run `npm ci` first if frontend dependencies are not installed. Frontend tests cover multipart requests and error parsing, upload validation and failed-record recovery, unit formatting, server pagination, and map rendering from returned geometry. The ignored build output is `frontend/dist/`. Direct navigation to a file URL works with Vite's SPA fallback; other hosting configurations must serve `index.html` for frontend routes.
 
-## Layout and design decisions
-
-### Processing flow
-
-1. The React client sends a multipart `upload` field to FastAPI. The API validates the extension and body size, streams the upload into an isolated temporary directory, and validates ZIP contents or KML XML.
-2. Fiona reads the selected Shapefile components, or the KML parser extracts Placemarks. The service records file metadata and each feature's ID, geometry, attributes, and source CRS.
-3. The measurement module validates each geometry, transforms measurable features to a selected projected CRS, converts target units to metres or square metres, and records a value or an explicit error. A transaction persists the feature rows and final file status.
-4. The UI retrieves persisted file and measurement pages. A separate map endpoint transforms valid, located geometries to WGS84 GeoJSON; the measurement endpoint retains source-coordinate geometry for compatibility.
+## Project structure and design decisions
 
 ```text
-app/
-  config.py       Environment settings
-  database.py     SQLAlchemy engine and sessions
-  models.py       Relational file and feature records
-  schemas.py      Pydantic response contracts
-  geo.py          KML/Shapefile parsing and CRS measurements
-  service.py      Processing and persistence policy
-  main.py         FastAPI routes and lifespan
-  map_geometry.py WGS84 GeoJSON conversion for the map
-  upload_limit.py Early multipart body limit
-frontend/         React application and frontend tests
-tests/            Isolated API and geospatial tests
-samples/          Example KML and generated ZIP destination
-scripts/          Sample Shapefile generator
+aereo-assessment/
+├── app/
+│   ├── main.py             FastAPI routes
+│   ├── config.py           Environment settings
+│   ├── database.py         SQLAlchemy engine and sessions
+│   ├── models.py           File and feature tables
+│   ├── schemas.py          Response models
+│   ├── service.py          Processing and persistence
+│   ├── geo.py              File parsing and measurement
+│   ├── map_geometry.py     WGS84 map conversion
+│   └── upload_limit.py     Multipart body limit
+├── frontend/
+│   ├── src/                React pages, map, API client, tests
+│   ├── package.json
+│   └── .env.example
+├── tests/                  API and geospatial tests
+├── samples/                Example KML and zipped Shapefile
+├── scripts/                Sample Shapefile generator
+├── .env.example
+├── .python-version
+├── pyproject.toml
+└── README.md
 ```
 
-Fiona reads Shapefiles from validated extracted components; direct Fiona iteration preserves feature IDs and avoids loading an entire GeoDataFrame. GeoPandas supplies UTM estimation, while Shapely and PyProj handle geometry and coordinate transformation. SQLite JSON columns store per-feature geometry and attributes, keeping file and feature rows relational and independently queryable. Synchronous processing keeps the assignment simple and ensures that a 201 response reflects finished processing, including a possible partial result. A background queue was deferred because the current upload contract completes within one request. A server-backed file list was chosen over browser-only history because records must remain available across sessions. A separate WGS84 map endpoint avoids changing the source-coordinate geometry already returned by the measurement contract.
+Fiona iterates validated Shapefile components directly, preserving feature IDs without loading an entire GeoDataFrame; GeoPandas is used for UTM estimation. SQLAlchemy keeps file metadata and per-feature geometry, attributes, results, and diagnostics in related rows. Synchronous processing makes a 201 response reflect a finished result. Server-backed listing supports history while the database survives; a separate WGS84 map endpoint preserves the source-coordinate geometry in measurement responses.
 
-### Limitations
+## Current limitations
 
-KML supports simple Point, LineString, and Polygon Placemarks; KML `MultiGeometry`, tracks, and network links are reported as unsupported. Shapefile multipart geometries are supported. The backend does not return polygon perimeter; the UI reports only area or line length when present. No authentication or user isolation is provided: all stored files are visible to anyone who can reach the API. The health endpoint checks the app process, not database connectivity. The map renders at most 2,000 loaded features per view; the measurement table remains paginated across all features. Antimeridian geometry may wrap visually across the map even when its measurement succeeds. Browser-side tiles require internet connectivity; tests do not depend on tiles. Database schema changes need a migration tool before an existing database is upgraded. Python 3.12, PostgreSQL, and large ZIP expansion stress cases have not been exercised here.
+- KML supports simple Point, LineString, and Polygon Placemarks. KML `MultiGeometry` produces a feature error; tracks and network links are not followed or processed. GeometryCollections are unsupported for measurement. Shapefile multipart geometries are supported. Invalid geometry is rejected rather than silently repaired.
+- Polygon perimeter and 3D/terrain measurements are not calculated; altitude is ignored. A feature spanning more than 60° in longitude or latitude is rejected, and even accepted measurements are not survey-grade accuracy guarantees.
+- No authentication or user isolation is implemented. Anyone who can reach the API can list stored files. `GET /health` checks the process, not database connectivity.
+- The map loads at most 2,000 features per view. Antimeridian geometry may wrap visually; map tiles require network access. Measurements remain server-paginated.
+- The default SQLite database on a Render free web service is ephemeral. The backend does not retain original uploads. Schema migrations, Python 3.12 local tests, PostgreSQL tests, and large ZIP expansion stress tests are not included.
 
-### Learning outcomes and future scope
+## Learning Outcomes
 
-This project demonstrates why CRS provenance, geometry validation, bounded file extraction, per-feature diagnostics, and independent geodesic reference checks matter for trustworthy spatial APIs. It also shows the tradeoff between a simple synchronous API and the need for background processing at larger scale. Future work includes authenticated uploads and user isolation, explicit CRS overrides with provenance, schema migrations, background jobs, and server-side map simplification for very large datasets.
+This project demonstrates how to:
+
+- Preserve source CRS information, select a local projected CRS, convert units, and check area or length against a geodesic reference instead of measuring degrees.
+- Validate KML and zipped Shapefiles before parsing, then handle multipart, empty, invalid, or unsupported geometries with explicit feature outcomes.
+- Design paginated REST responses with clear processing statuses and errors, and persist file metadata and per-feature results through SQLAlchemy.
+- Connect a typed React client to the FastAPI service so uploads, history, measurements, and WGS84 map geometry reflect server data.
+
+## Future Improvements
+
+Add a managed persistent database and object storage, authentication and per-user access control, explicit CRS overrides with provenance, polygon perimeter calculations, schema migrations, and background processing or map simplification for larger datasets. These are proposed improvements, not current features.
